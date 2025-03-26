@@ -1,0 +1,649 @@
+---
+title: "`r params$title`"
+output:
+  pdf_document: 
+    keep_tex: true
+    includes:
+      in_header: header.tex
+    highlight: null
+date: "`r Sys.Date()`"
+params: 
+  pipeline_fp: "F:/profi5/foxgroup_rscript/paperi1/pipeline_24joulu09/model_results"
+  title: "24joulu09" 
+editor_options: 
+  chunk_output_type: console
+---
+
+
+
+```{r message=FALSE, include=FALSE}
+library(knitr)
+library(patchwork)
+library(kableExtra)
+library(htmltools)
+source("F:/profi5/foxgroup_rscript/paperi1/pipeline_24joulu09/lappu1_util_24joulu09.R")
+source("F:/profi5/foxgroup_rscript/paperi1/pipeline_24joulu09/resultpager_util_24joulu09.R")
+
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warnings=FALSE)
+
+pipeline_fp <- params$pipeline_fp
+pipeline_fp <- "F:/profi5/foxgroup_rscript/paperi1/pipeline_24joulu09/model_results"
+```
+
+
+# AUC tab, main+supp
+```{r echo=FALSE}
+auctabs <- readRDS(file.path(pipeline_fp, "auctab_fu810.RDS"))
+
+modx0 <- function(x){
+  ((row_number()-1)==0) | ((row_number()-1)%%x==0)
+}
+
+wrap_dollar <- function(x){
+  glue("${x}$")
+}
+
+wrap_sz <- function(x){
+  glue("\\sz{<x>}", .open="<", .close=">")
+}
+wrap_multiz <- function(x,z){
+  glue("\\multicolumn{<z>}{l}{\\textit{<x>}}", .open="<", .close=">")
+}
+
+
+auctabs_total <- auctabs %>% 
+  mutate(across(matches("auc_FR"), ~ format3d(.x,3)),
+         across(matches("auc_C66"), ~ format3d(.x,3))) %>%
+  mutate(across(matches("auc_"), ~ wrap_dollar(.x)),
+         across(matches("ci_"), ~ wrap_sz(.x)))
+
+names(auctabs_total) <- gsub("_","",names(auctabs_total))
+
+
+auctabs_total_final_form <- auctabs_total %>% 
+  mutate(model = str_split_i(latexmod, fixed("}^{"),1)%>%str_split_i(.,fixed("{"),2),
+         pen = str_split_i(latexmod,fixed("}^{"),2) %>% str_split_i(.,fixed("}"),1)) %>%
+  select(-latexmod) %>%
+  select(followup, pen, model, everything()) %>%
+  mutate(pen = case_when(
+    model == "Logreg" ~ "",
+    pen == "full" ~ "Full penalization",
+    pen == "fix" ~ "Partial penalization")
+    ) %>%
+  mutate(model = model %>% 
+           gsub("Logreg", "Baseline", .) %>% 
+           gsub("Ela05", "Elastic net",.)) %>%
+  mutate(followup = paste0(followup, "-year followup"))
+```
+
+#auc 5v
+```{r echo=FALSE}
+auctabs_fu5 <- auctabs_total_final_form %>% 
+  filter(followup == "5-year followup") %>%
+  bind_rows(auctabs_total_final_form%>%transmute(model=pen)) %>%
+  distinct %>%
+  filter(model != "") %>%
+  mutate(pen = if_else(model=="Full penalization", "fp", pen),
+         pen = if_else(model=="Partial penalization", "pp", pen)) %>%
+  arrange( 
+    match(pen, c("","fp","Full penalization", "pp", "Partial penalization")),
+    match(model, c("Baseline","Ridge","Elastic net","Lasso", "Stepwise"))
+  ) %>%
+  select(-c(followup, pen)) %>%
+  mutate(model = if_else(grepl("penalization", model), wrap_multiz(model, 3), model))
+
+
+auctabs_fu5[is.na(auctabs_fu5)]<-""
+auctabs_fu5 %>% kbl(row.names=F,format="latex",booktabs=T, escape=F) %>% landscape
+```
+
+#auc 5 & 8v
+```{r echo=FALSE}
+auctabs_fu58 <- auctabs_total_final_form %>% 
+  bind_rows(auctabs_total_final_form%>%transmute(followup=followup)) %>%
+  bind_rows(auctabs_total_final_form%>%transmute(pen=pen, followup=followup)) %>%
+  distinct() %>%
+  filter(!is.na(pen)) %>%
+  arrange( 
+    followup,
+    match(pen, c("","Full penalization",  "Partial penalization")),
+    match(model, c(NA, "Baseline","Ridge","Elastic net","Lasso", "Stepwise"))
+  ) %>%
+  mutate(pen = if_else(duplicated(select(.,followup,pen)), "", if_else(nchar(pen)>0, wrap_multiz(pen,2), "")),
+         followup = if_else(duplicated(followup), "", wrap_multiz(followup,3)))
+
+auctabs_fu58[is.na(auctabs_fu58)]<-""
+auctabs_fu58 %>% kbl(row.names=F,format="latex",booktabs=T, escape=F) %>% landscape
+```
+
+# deltaAUC tab, supp
+
+```{r}
+rttab <-  bind_rows(readRDS(file.path(pipeline_fp, "roctesttab_fu5.RDS")), 
+                    readRDS(file.path(pipeline_fp, "roctesttab_fu810.RDS")))
+
+rrtabs <- rttab %>%
+  mutate(Set = gsub("C6646_58","C6646",Set),
+         CI = CI %>% wrap_dollar %>% wrap_sz,
+         dAUC = dAUC %>% wrap_dollar) %>%
+  pivot_wider(id_cols=c(Followup,Model), names_from=Set, values_from=c(dAUC, CI),names_vary="slowest",names_sep="") %>%
+  mutate(pen = str_split_i(Model, fixed("^"), 2) %>% 
+           str_extract(., "[A-Za-z]+") ) %>%
+  select(Followup, pen, everything()) %>%
+  mutate(Model  =  str_split_i(Model, fixed("^"), 1) %>% 
+           str_split_i(.,fixed("{"), 2) %>% 
+           str_extract(., "[A-Za-z]+") %>% 
+           gsub("Ela", "Elastic net",.)) %>%
+  mutate(Followup = Followup %>% 
+           paste0(., "-year follow-up")) %>% 
+  mutate(pen = pen %>% 
+           gsub("full", "Full penalization",.) %>% 
+           gsub("fix", "Partial penalization",.))
+
+#tuplataan fu ja pen rivit, tyhjätään tuplilta muut kentät. saadaan fu ja pen ikään kuin alaotsikoiksi.
+deltaAUCtabs <- rrtabs %>%
+  mutate(pen = ifelse(duplicated(paste0(Followup,pen)), "", pen)) %>%
+  mutate(Followup = ifelse(duplicated(Followup), "", Followup)) %>%
+  slice(sort(c(row_number(), c(1,9)))) %>%
+  mutate(across(-Followup, ~ if_else(duplicated(Followup, fromLast = TRUE) & Followup!=""," ",.))) %>%
+  slice(sort(c(row_number(), c(2,6,11,15)))) %>%
+  mutate(across(-c(pen,Followup), ~ if_else((pen != "" & pen != " " & lead(pen)==pen)," ",.))) %>%
+  mutate(pen = if_else(Model != " ", "", pen) %>% trimws,
+         Followup = if_else(duplicated(Followup),"",Followup)%>%trimws) %>%
+  mutate(pen = if_else(pen!="", wrap_multiz(pen,2), ""),
+         Followup = if_else(Followup!="", wrap_multiz(Followup,3), ""))
+  
+
+deltaAUCtabs %>% 
+  kbl(row.names=F,format="latex",booktabs=T, escape=F, linesep="",col.names=NULL) %>% 
+  add_header_above(c(" "=1, " "=1, "Model"=1, "FINRISK 2002"=2, "FINRISK 1997"=2, "FINRISK 2007"=2, "FINRISK 2012"=2,"NFBC1966"=2)) %>%
+  kable_styling(latex_options = c("scale_down")) %>%
+  landscape
+```
+
+
+# calibration tab, supp
+
+```{r echo=FALSE}
+caltabs <- readRDS(file.path(pipeline_fp, "caltab_fuall.RDS"))
+
+add_superscript1 <- function(x) paste0(x, "^1")
+check_ci <- function(intci, num) {
+  bounds <- str_extract_all(intci, "-?\\d+\\.?\\d*") %>% map(as.numeric)
+  map_lgl(bounds, ~ num >= .x[1] & num <= .x[2])
+}
+
+prep_calibtab <- function(x){
+  x2 <- x %>% 
+    mutate(model = str_split_i(LatexModel, fixed("}^{"),1)%>%str_split_i(.,fixed("{"),2),
+           pen = str_split_i(LatexModel,fixed("}^{"),2) %>% str_split_i(.,fixed("}"),1)) %>%
+    select(-LatexModel) %>%
+    mutate(pen = case_when(
+      model == "Logreg" ~ "",
+      pen == "full" ~ "Full penalization",
+      pen == "fix" ~ "Partial penalization")
+    ) %>%
+    mutate(model = model %>% 
+             gsub("Logreg", "Baseline", .) %>% 
+             gsub("Ela05", "Elastic net",.)) %>%
+    mutate(method = ifelse(modx0(5), paste0("\\multirow{5}{*}{", model, "}"), "")) %>% 
+    relocate(method, .before=FR)
+  x3 <- x2 %>%
+    bind_rows(transmute(x2, method = if_else(grepl("Ridge",model)&FR=="FR02", pen, ""))) %>%
+    filter(!(method=="" & is.na(FR))) %>%
+    mutate(pen = case_when(grepl("Partial", method) ~ "pp", grepl("Full", method) ~ "fp", TRUE~pen)) %>%
+    arrange(
+      match(pen, c("","fp","Full penalization","pp","Partial penalization"))
+    ) %>%
+    select(-c(model,pen)) %>%
+    mutate(FR = case_when(
+      FR == "FR02" ~"FINRISK 2002",
+      FR == "FR07" ~"FINRISK 2007",
+      FR == "FR97" ~"FINRISK 1997",
+      FR == "FR12" ~"FINRISK 2012",
+      FR == "C66"  ~"NFBC1966"
+    ))
+  x3[is.na(x3)]<-""
+  x3
+}
+
+
+caltabs_latex1 <- caltabs %>%
+  mutate(intci_ok = check_ci(int_ci, 0),
+         slopeci_ok = check_ci(slope_ci, 1)) %>%
+  mutate_at(c("int", "slope"), ~format3d(.x, 2)) %>%
+  mutate(int_ci = if_else(intci_ok, add_superscript1(int_ci), int_ci),
+         slope_ci = if_else(slopeci_ok, add_superscript1(slope_ci), slope_ci)) %>%
+  mutate_at(c("int","int_ci", "slope", "slope_ci"), ~wrap_dollar(.x)) %>%
+  mutate_at(c("int_ci", "slope_ci"), ~wrap_sz(.x)) %>%
+  select(-c(tag, Brier, Brier_scaled, intci_ok, slopeci_ok))
+
+names(caltabs_latex1) <- gsub("_","",names(caltabs_latex1))
+
+lappu1_tab_calib_all_exclusions <- caltabs_latex1 %>% 
+  pivot_wider(names_from=c(Followup), 
+              values_from=c(int, intci, slope, slopeci),
+              id_cols=c(LatexModel, FR), 
+              names_vary="slowest", 
+              names_sep = "")
+
+lappu1_tab_calib_all_exclusions %>% 
+  prep_calibtab %>%
+  kbl(row.names=F,format="latex",booktabs=T, escape=F) 
+
+```
+
+
+# taulu 1 kliiniset muuttujat, main
+
+```{r echo=FALSE}
+clinvartab <- readRDS(file.path(pipeline_fp, "clinvartab_all.RDS"))
+
+add_n_row <- function(df) {
+  n_values <- sapply(names(df), function(name) {
+    if (grepl("N\\d+", name)) as.numeric(sub(".*N(\\d+)", "\\1", name)) else NA
+  })
+  
+  n_df <- data.frame(chr = "N", as.list(n_values[-1]), stringsAsFactors = FALSE) %>% mutate_all(as.character)
+  rownames(n_df) <- NULL
+  colnames(n_df) <- names(df)
+  
+  df %>%
+    bind_rows(n_df) %>% 
+    mutate_all(as.character)
+}
+
+
+fi_names <- c("IKA", "SUKUP2", "ALKI1", "TUPAKOINTI1", "HDL", "KOL", 
+              "TRIG", "SYSm", "DIASm", "VYOTARO", "BMI", "GLC", "BP_TREAT1", 
+              "LIPID_TREAT1", "DIAB_FAMILYHIST1", "FU5_cases", "FU8_cases", 
+              "rawN", "N")
+
+en_names <- c("Age","Female sex","Alcohol","Current smoking","HDL-C","Total cholesterol","Triglycerides",
+              "Systolic BP","Diastolic BP","Waist circumference","BMI","Glucose","BP medication",
+              "Lipid medication","Diabetes family history","5-year cases","8-year cases","Unfiltered N","N")
+
+wanted_order <- c("Age","Female sex","Alcohol","Current smoking","Waist circumference","BMI","Systolic BP",
+                  "Diastolic BP","HDL-C","Total cholesterol","Triglycerides","Glucose","BP medication",
+                  "Lipid medication","Diabetes family history","5-year cases","8-year cases","Unfiltered N","N")
+
+
+clinvars_lappu <- clinvartab %>% 
+  as.data.frame() %>% 
+  setNames(gsub("[^A-Za-z0-9]", "", names(.))) %>%
+  add_n_row() %>%
+  separate_wider_delim(cols=c(2:6), delim="(", names_sep="_", too_few="align_start") %>%
+  mutate_all(trimws) %>%
+  mutate_at(c(3,5,7,9,11), ~ ifelse(is.na(.), "", wrap_dollar(wrap_sz(paste0("(", .))))) %>%
+  mutate_at(c(2,4,6,8,10), ~ ifelse(is.na(.), "", wrap_dollar(.))) %>% 
+  mutate_at(c(2,4,6,8,10), ~ gsub(",", "", .)) %>%
+  mutate(Characteristic = recode(Characteristic, !!!setNames(en_names, fi_names))) %>% 
+  arrange(match(Characteristic, wanted_order)) %>%
+  arrange(desc(Characteristic=="N")) %>%
+  mutate_all(~gsub("%","\\%", ., fixed=T)) %>%
+  setNames(names(.)%>%str_split_i(., "N", 1)) 
+
+
+clinvars_lappu[clinvars_lappu$Characteristic == "N",] <- ifelse(clinvars_lappu[clinvars_lappu$Characteristic == "N",] == "", "", gsub("^\\$", "$N=", clinvars_lappu[clinvars_lappu$Characteristic == "N",]))
+clinvars_lappu$Characteristic[1]<-c("")
+
+clinvars_lappu %>% 
+  kbl(row.names=F,format="latex",booktabs=T, escape=F, linesep="") %>%   
+  row_spec(c(5,7,13,16), extra_latex_after = "\\addlinespace") %>%
+  row_spec(c(1), extra_latex_after = "\\midrule") %>%
+  landscape
+```
+
+
+# beta plotit
+
+```{r echo=FALSE}
+prep_betadat <- function(betaplots_data) {
+  bplot_data <- bind_rows(list(
+    betaplots_data[["fulldat.ridgeplot"]]$data,
+    betaplots_data[["fixdat.ridgeplot"]]$data,
+    betaplots_data[["fulldat.ela05plot"]]$data,
+    betaplots_data[["fixdat.ela05plot"]]$data,
+    betaplots_data[["fulldat.lassoplot"]]$data,
+    betaplots_data[["fixdat.lassoplot"]]$data,
+    betaplots_data[["fulldat.stepwplot"]]$data,
+    betaplots_data[["fixdat.stepwplot"]]$data
+  ), .id="rowid") %>%
+    filter(!grepl(10,name)) %>%
+    mutate(
+      # var = as.character(var),
+      followup = str_split_i(name, "_",2),
+      modname = c(
+        "fulldat.ridgeplot",
+        "fixdat.ridgeplot",
+        "fulldat.ela05plot",
+        "fixdat.ela05plot",
+        "fulldat.lassoplot",
+        "fixdat.lassoplot",
+        "fulldat.stepwplot",
+        "fixdat.stepwplot")[as.numeric(rowid)],
+      modname = paste0(modname, name),
+      modname = gsub("dat.", "", modname) %>%
+        gsub("full","full_",.) %>%
+        gsub("fix","fix_",.) %>%
+        gsub("clinical_", "_", .) %>%
+        gsub("none_","_",.) %>%
+        gsub("plot","",.)) %>%
+    arrange(followup, rowid, modname)
+  bplot_data
+}
+
+i.set <- function(x, i, val){
+  x[i] <- val
+  x
+}
+
+make_modtype_betaplot <- function(pbdat, mod_colors, mod_linetypes, maintit, dropleg=F) {
+  major_ticks <- unique(pbdat$var)[seq(1, length(unique(pbdat$var)), by=5)]
+  p <- ggplot(pbdat, aes(x=var, y=value, color=modname, group=modname)) +
+    geom_line(aes(linetype=modname), linewidth=1.2, alpha=0.4) +
+    # geom_line(linewidth=0.8, alpha=0.2) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle=90, hjust=1, vjust=0.5, size=12),
+      axis.text.y = element_text(size=24),
+      legend.position = "bottom",
+      panel.grid.major.x = element_line(color=ifelse(1:169%%5==0, "grey60", "grey95") %>% i.set(15, "grey20"), 
+                                        size=ifelse(1:169%%5==0, 0.4, 0.2) %>% i.set(15, 1)),
+      plot.title=element_text(size = 24),
+      legend.text = element_text(size=24),
+      legend.title = element_blank(),
+      axis.title = element_text(size=24)
+    ) +
+    scale_color_manual(values=mod_colors) +
+    scale_linetype_manual(values=mod_linetypes) +
+    labs(x = "", y="Regression coefficient value")+ 
+    ggtitle(maintit)
+  if(dropleg) p <- p + theme(legend.position="none", axis.title.x = element_blank())
+  p
+}
+
+
+# prep_lappu_betaplot <- function(x, model) {
+#   x %>% 
+#     filter(grepl(model, modname)) %>%
+#     mutate(pen= ifelse(grepl("clinical",name),"Partial penalization","Full penalization"),
+#            fu = ifelse(grepl("8",name), "8", "5"),
+#            modname=paste0(pen, "_FU", fu))
+# }
+
+prep_lappu_betaplot_fixfu <- function(x, model) {
+  x %>% 
+    filter(grepl(model, modname)) %>%
+    mutate(pen= ifelse(grepl("clinical",name),"Partial penalization","Full penalization"),
+           fu = ifelse(grepl("8",name), "8", "5"),
+           modname=pen)
+}
+# 
+# make_1by4_betaplots <- function(betaplots_data) {
+#   
+#   mod_colors <- c("black","black","tomato3","tomato3")
+#   mod_linetypes <- c("solid","dotted","solid","dotted")
+#   
+#   bdat_general <- prep_betadat(betaplots_data)     
+#   
+#   pb_ridge <- bdat_general %>%
+#     prep_lappu_betaplot("ridge") %>%
+#     make_modtype_betaplot(mod_colors, mod_linetypes,"Ridge", dropleg=T)
+#   
+#   pb_lasso <- bdat_general %>%
+#     prep_lappu_betaplot("lasso") %>%
+#     make_modtype_betaplot(mod_colors, mod_linetypes,"Lasso", dropleg=T)
+#   
+#   
+#   pb_ela05 <- bdat_general %>%
+#     prep_lappu_betaplot("ela05") %>%
+#     make_modtype_betaplot(mod_colors, mod_linetypes,"Ela05", dropleg=T)
+#   
+#   pb_stepw <- bdat_general %>%
+#     prep_lappu_betaplot("stepw") %>%
+#     make_modtype_betaplot(mod_colors, mod_linetypes,"Stepwise", dropleg=F)
+#   
+#   betaplots <- pb_ridge / pb_ela05 / pb_lasso / pb_stepw
+#   
+#   return(betaplots)
+# }
+
+fft<-format_fu_title <- function(modname,funum) {
+  paste0(modname, " ",funum, "-year follow-up")
+}
+
+make_1by4_fu5or8_betaplots <- function(betaplots_data, fu, varlabs) {
+  
+  mod_colors <- c("black","tomato3")
+  mod_linetypes <- c("solid","solid")
+  funum <- fu%>%gsub("FU","",.)
+  bdat_general <- prep_betadat(betaplots_data) %>% 
+    filter(followup==fu) %>% 
+    mutate(modname=gsub(paste0("_",fu), "", modname)) %>%
+    arrange(match(var, wanted_order, nomatch = max(row_number()) + 1)) %>%
+    arrange(followup,rowid,modname) %>% 
+    mutate(var = factor(var, levels=unique(var)))
+
+  na.omit(match(bdat_general$var, varlabs$name_to_use))
+  
+  #explicit call for testing
+  pb_ridgedat <- bdat_general %>% prep_lappu_betaplot_fixfu("ridge")
+  pb_ridge <- make_modtype_betaplot(pbdat=pb_ridgedat, mod_colors, mod_linetypes, maintit=fft("Ridge regression,",funum), dropleg=T)
+  
+  pb_lasso <- bdat_general %>%
+    prep_lappu_betaplot_fixfu("lasso") %>%
+    make_modtype_betaplot(mod_colors, mod_linetypes,fft("Lasso regression,",funum), dropleg=T)
+  
+  
+  pb_ela05 <- bdat_general %>%
+    prep_lappu_betaplot_fixfu("ela05") %>%
+    make_modtype_betaplot(mod_colors, mod_linetypes,fft("Elastic net,",funum), dropleg=T)
+  
+  pb_stepw <- bdat_general %>%
+    prep_lappu_betaplot_fixfu("stepw") %>%
+    make_modtype_betaplot(mod_colors, mod_linetypes,fft("Stepwise regression,",funum), dropleg=F)
+  
+  betaplots <- pb_ridge / pb_ela05 / pb_lasso / pb_stepw
+  
+  return(betaplots)
+}
+
+```
+
+```{r fig.height=35, fig.width=28.6}
+betaplots_data <- readRDS(file.path(pipeline_fp, "betaplotit.RDS"))
+varlabs <- fread("F:/profi5/data/util/var_metainfo.csv")
+```
+
+
+```{r betaplot_fu5, fig.height=35, fig.width=28.6}
+make_1by4_fu5or8_betaplots(betaplots_data, fu="FU5",varlabs)
+```
+
+
+```{r betaplot_fu8, fig.height=35, fig.width=28.6}
+make_1by4_fu5or8_betaplots(betaplots_data, fu="FU8",varlabs)
+```
+
+
+# beta taulut
+
+```{r}
+prep_betatab <- function(x) {
+  x <- x %>%
+    select(var,logreg,step_fix,lasso_fix,ela05_fix,ridge_fix,step_full,lasso_full,ela05_full,ridge_full) %>%
+    mutate_at(2:10, ~glue("${.x}$")) %>%
+    mutate_all(~gsub("_","\\_", ., fixed=T)) %>%
+    mutate_all(~gsub("$$","$ $", ., fixed=T))
+  
+  linespace_lines <- which(x$var %in% linespace_before_values)-1
+  
+  x %>%
+    kbl(format="latex", escape=F, booktabs=F, rownames=F, linesep="", longtable=T,
+        col.names=c("Variable","Baseline",
+                    "Stepwise","Lasso","Elastic net","Ridge",
+                    "Stepwise","Lasso","Elastic net","Ridge")) %>% 
+    add_header_above(c(" "=2, "Partial penalization"=4, "Full penalization"=4)) %>%
+    row_spec(linespace_lines, extra_latex="\\addlinespace")
+      
+}
+
+
+linespace_before_values <- c("HDL", "WAIST", "XXL.VLDL.P", "XL.VLDL.P", "L.VLDL.P", "M.VLDL.P", 
+                            "S.VLDL.P", "S.VLDL.TG", "IDL.P", "L.LDL.P", "M.LDL.P", "S.LDL.P", 
+                            "XL.HDL.P", "L.HDL.P", "M.HDL.P", "S.HDL.P", "VLDL.D", "LDL.C", 
+                            "FREEC", "TOTPG", "APOA1", "DHA", "MUFA", "PUFATOFA", "ALA", 
+                            "LEU", "ACACE")
+
+betavals <- readRDS(file.path(pipeline_fp, "fulen_betataulut.RDS")) 
+varlabs <- fread("F:/profi5/data/util/var_metainfo.txt")
+betavals$fu5mods %>% arrange(match(var, c("(Intercept)", clinvars_lappu$Characteristic))) %>% prep_betatab
+betavals$fu8mods %>% arrange(match(var, c("(Intercept)", clinvars_lappu$Characteristic))) %>% prep_betatab
+```
+
+# data means sds
+
+```{r}
+mesd_inter <- readRDS(file.path(pipeline_fp, "data_means_sds.RDS"))
+labs <- fread("F:/profi5/data/util/var_metainfo.csv")
+
+varmean_tab <- mesd_inter %>% 
+  select(var,fr02,everything()) %>%
+  setNames(toupper(names(.))) %>%
+  separate_wider_delim(cols=c(2:6), delim="(", names_sep="_", too_few="align_start") %>%
+  mutate_all(trimws) %>%
+  mutate_at(c(2:11), ~ gsub("e", "\\e", ., fixed=T)) %>%
+  mutate_at(c(3,5,7,9,11), ~ wrap_sz(wrap_dollar(.x))) %>%
+  mutate_at(c(3,5,7,9,11), ~ gsub("\\sz{$", "\\sz{$(",.x, fixed=T)) %>%
+  mutate_at(c(2,4,6,8,10), ~ wrap_dollar(.x)) %>%
+  left_join(varlabs%>%select(name_in_data, name_to_use), by=c("VAR"="name_in_data")) %>%
+  rename(Measure = name_to_use) %>%
+  select(Measure, everything()) %>%
+  select(-VAR) 
+
+#järjestetään uudelleen, niin että glukoosi tulee kliinisten muuttujien joukkoon
+varmean_tab <- varmean_tab[na.omit(match(labs$name_to_use, varmean_tab$Measure)),] %>%
+  mutate(Measure = gsub("_","\\_", Measure, fixed=T)) %>%
+  arrange(match(Measure, clinvars_lappu$Characteristic)) %>%
+  setNames(names(.)%>%str_split_i(., "_", 1))
+
+linespace_before_values <- c("HDL", "WAIST", "XXL.VLDL.P", "XL.VLDL.P", "L.VLDL.P", "M.VLDL.P", 
+                            "S.VLDL.P", "S.VLDL.TG", "IDL.P", "L.LDL.P", "M.LDL.P", "S.LDL.P", 
+                            "XL.HDL.P", "L.HDL.P", "M.HDL.P", "S.HDL.P", "VLDL.D", "LDL.C", 
+                            "FREEC", "TOTPG", "APOA1", "DHA", "MUFA", "PUFATOFA", "ALA", 
+                            "LEU", "ACACE")
+
+linespace_lines <- which(varmean_tab$Measure %in% linespace_before_values)-1
+
+varmean_tab %>%
+  kbl(format="latex", escape=F, booktabs=T, rownames=F, col.names=NULL, linesep="", longtable=T) %>% 
+  add_header_above(c("Measure"=1, "FINRISK 2002"=2, "FINRISK 1997"=2, "FINRISK 2007"=2, "FINRISK 2012"=2,"NFBC1966"=2)) %>%
+  row_spec(linespace_lines, extra_latex="\\addlinespace")
+```
+
+
+# muuttujien selitteet -taulu
+
+```{r}
+# template <- fread("F:/profi5/data/util/metab_list.csv") %>%
+#   mutate(name_to_use = toupper(`Variable name`)) %>%
+#   mutate(name_in_data = name_to_use %>%
+#            gsub("TOFA", ".FA", ., fixed=T) %>%
+#            gsub("TOPG", ".PG", ., fixed=T) %>%
+#            gsub("TOAPOA", ".APOA", ., fixed=T),
+#          name_in_data = case_when(
+#            name_in_data == "APOA1" ~ "NMR_APOA1",
+#            name_in_data == "APOB" ~ "NMR_APOB",
+#            TRUE ~ name_in_data
+#          )) %>%
+#   select(Name, Unit, name_to_use, name_in_data)
+# 
+# #määritelty kliinisen taulun teossa yllä
+# fien_names <- data.frame(name_in_data=fi_names, Name=en_names) %>%
+#   mutate(Name = Name %>%
+#            gsub("Female", "Sex=Female", .) %>%
+#            gsub("HDL", "High density lipoprotein (clinical)", .) %>%
+#            gsub("KOL", "Total cholesterol (clinical)", .) %>%
+#            gsub("TRIG", "Total triglycerides (clinical)", .) %>%
+#            gsub("DIASm", "Diastolic blood pressure (mean over two measurements)", ., fixed=T) %>%
+#            gsub("SYSm", "Systolic blood pressure (mean over two measurements)", .) %>%
+#            gsub("BMI", "Body mass index",.) %>%
+#            gsub("BP treatment", "Blood pressure treatment",.) %>%
+#            gsub("Lipid treatment", "Lipid treatment (e.g. statins)",.) %>%
+#            gsub("Diabetes family history", "History of diabetes in close family",.) %>%
+#            gsub("Alcohol", "Alcohol consumption during the last week",.)
+#   ) %>%
+#   mutate(Unit = case_when(
+#     Name == "High density lipoprotein (clinical)" ~ "mmol/l",
+#     Name == "Total cholesterol (clinical)" ~ "mmol/l",
+#     Name == "Total triglycerides (clinical)" ~ "mmol/l",
+#     Name == "Diastolic blood pressure (mean over two measurements)" ~ "mmHg",
+#     Name == "Systolic blood pressure (mean over two measurements)" ~ "mmHg",
+#     Name == "Waist circumference" ~ "cm",
+#     Name == "Alcohol consumption during the last week" ~ "g",
+#     Name == "Age" ~ "years",
+#     Name == "Body mass index" ~ "$\\textrm{kg/m}^2$"
+#   )) %>%
+#   mutate(name_to_use = case_when(
+#     name_in_data == "IKA" ~ "AGE",
+#     name_in_data == "SUKUP2" ~ "SEX",
+#     name_in_data == "ALKI1" ~ "ALCOHOL",
+#     name_in_data == "TUPAKOINTI1" ~ "SMOKING",
+#     name_in_data == "HDL" ~ "HDL",
+#     name_in_data == "KOL" ~ "CHOL",
+#     name_in_data == "VYOTARO" ~ "WAIST",
+#     TRUE ~ name_in_data
+#   )) %>%
+#   filter(name_in_data != "GLC") #tämä tulee templatesta.
+
+
+# labs <- bind_rows(fien_names, template)
+# labs <- labs[c(1:which(labs$name_in_data=="BMI"),which(labs$name_in_data == "GLC"),which(labs$name_in_data=="BMI"):nrow(labs)),] %>% distinct
+# labs <- bind_rows(labs, data.frame(name_in_data="Y",Name="T2D",Unit="",name_to_use="Y"))
+# fwrite(labs, "F:/profi5/data/util/var_metainfo.txt", sep="\t")
+
+labs <- fread("F:/profi5/data/util/var_metainfo.txt")
+
+# labelled_data <- mesd_inter %>% 
+#   select(var) %>%
+#   mutate(combvar = var %>%
+#            gsub(".FA", "TOFA", .,  fixed=T) %>% 
+#            gsub("NMR_", "", ., fixed=T) %>%
+#            gsub("APOB.","APOBTO", ., fixed=T) %>%
+#            gsub("TG.PG", "TGTOPG", ., fixed=T)) %>%
+#   left_join(labs, by=c("combvar"="name_to_use")) %>%
+#   mutate(Name = ifelse(is.na(Name), en, Name)) %>%
+#   mutate(Unit = ifelse(is.na(Unit), unit, Unit)) %>%
+#   select(-c(combvar, `Abbr.`, en, unit))
+
+
+#mesd_inter on tässä vaan siksi että saadaan _käytetyt_ muuttujanimet. 
+labelled_data <- mesd_inter %>% 
+  select(var) %>%
+  left_join(labs, by=c("var"="name_in_data")) %>%
+  select(name_to_use, Name, Unit)
+labelled_data <- labelled_data[na.omit(match(labs$name_to_use, labelled_data$name_to_use)),]
+
+linespace_before_values <- c("HDL-C", "Waist circumference", "XXL.VLDL.P", "XL.VLDL.P", "L.VLDL.P", "M.VLDL.P", 
+                            "S.VLDL.P", "S.VLDL.TG", "IDL.P", "L.LDL.P", "M.LDL.P", "S.LDL.P", 
+                            "XL.HDL.P", "L.HDL.P", "M.HDL.P", "S.HDL.P", "VLDL.D", "LDL.C", 
+                            "FREEC", "TOTPG", "APOA1", "DHA", "MUFA", "PUFATOFA", "ALA", 
+                            "LEU", "ACACE")
+
+linespace_lines <- which(labelled_data$name_to_use %in% linespace_before_values)-1
+
+
+
+labelled_data %>%
+  arrange(match(name_to_use, clinvars_lappu$Characteristic)) %>%
+  kbl(format="latex", escape=T, booktabs=T, rownames=F, linesep="", longtable=T) %>%
+  row_spec(linespace_lines, extra_latex="\\addlinespace")
+  
+```
+
+```{r calplot_longnames, fig.height=12, fig.width=12}
+include_graphics(file.path(pipeline_fp, "doublecal_plots_4by5.pdf"))
+```
+
+
